@@ -1,4 +1,4 @@
-# ACC100 LDPC — accumulated experience
+**# ACC100 LDPC — accumulated experience
 
 **Author:** LATUAN · **2026.10.20** · `LATUAN_ACC100_LDPC`  
 Card is not enabled yet. No measured numbers.
@@ -55,3 +55,4 @@ Keep ACC as the live path only when all four rows pass. Otherwise restore `nr_so
 | Hang ~120 s, then exit | FLR the ACC VF, restart `pf_bb_config`, then start the DU. Leave the PF alone. |
 | Throughput drop over 5% | Turn `_aal` off. Leave iterations unchanged for that run. |
 | E810 disappears | `oai-gnb-env` was restarted. |
+**
