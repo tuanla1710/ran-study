@@ -2,6 +2,32 @@
 
 The radio unit is a Picocom PC805 with a TI AFE7769D RFIC. OAM lives in `sources/oam_netconf_2.0.0`. The RFIC driver lives in `sources/rfic_afe7769d-1.6`. Runtime config lives under `packages/oru-8.0.1/firmware/mp_sw/rfic_driver/` and on the board at `/opt/o-ran/sw/sw-0/firmware/mp_sw/rfic_driver/`.
 
+## Summary
+
+- **IQ path:** DU → eCPRI → SoC (FFT/IFFT, resample to FSW) → JESD → RFIC (NCO, CFR, DPD, DAC/ADC, LO) → PA/LNA → antenna. Feedback after the PA returns to the RFIC for DPD and IQMC.
+- **FSW** is the JESD sample rate. uc2: 122.88 MHz.
+- **SoC** does the digital baseband and TDD GPIO. **RFIC** does analog conversion, frequency translation, and PA linearization. **Discrete RF** only amplifies and switches.
+- **pcsc.ko** boots the FHI, radio, and DPD clusters from `pico/pc805.img` and gives Linux `pcsce0` plus `ttyPSC*`. User IQ stays in the clusters.
+- **VLAN:** C/U-plane inside the FHI cluster. M-plane is a Linux VLAN on `pcsce0`.
+- **RFIC software:** `AFE7769D_Driver_server` brings the chip up over SPI, calibrates, then serves FIFO and `/tmp/DemoSocket`. Calibration measures loop delay, IQMC/LO leakage, then starts CFR, DPD, and CLGC.
+
+LATUAN, on the Gigalane PC805 line, marked in source from 2024.07 through 2026.02:
+
+- **RFIC driver:** Docker build, CLI get/set for DPD, CFR, IQMC, and DSA, CAFE v15 port, write measured IQMC/DPD delay back to the INI, CLGC temperature LUT, DPD output equalizer, and the PA-temperature message into the server.
+- **OAM to RFIC:** Bring-up and calibration result flags, alarm and LED around bring-up, Unix-socket IPC (`rfic_oam_ipc`), and GPIO control of PA, LNA, and the AFE TDD pins.
+- **OAM platform:** ORU CLI, performance counters, S-plane and SyncE status, ORU state machine, eCPRI stats, SFP status, CPU temperature, OTIC sync mapping, and the CU-plane init fix after PTP lock.
+- **Robot Framework:** NETCONF automation under `sources/robotframework-7.0.1`. Suites cover M-plane, sync, supervision, U-plane, software, performance, fault, interface, file, and user management. Entry points are `QuickStart.robot` and `script.sh`. OTIC configs are tagged LATUAN 2025.03.15.
+- **Edge AI (AIMAS):** `local/aimas` runs a TensorFlow Lite model (`model.tflite`, 30 steps by 5 features) for inference and training. Samples upload over MQTT. Anomaly results raise O-RAN faults critical, major, and minor. Enabled in OAM and the CLI as `AIMAS` (LATUAN 2025.07.30).
+- **OAM image build:** root `build.sh` rebuilds the whole M-plane image. It Docker-builds the RFIC driver, `glcli`, and `oam_netconf` (`./docker_build.sh ./build.sh 805 netconf`), stamps version `CS-ORU-v8.0.1`, and installs them plus the Robot Framework scripts into the release tree. `--build_host` builds the same stack on the host for PC805.
+- **CLI:** `sources/glcli-1.0.0` is the ORU shell (`orushell`, `oru-cli-server`), built in Docker and installed under `mp_sw/glcli`. OAM links the in-process CLI when `ORU_CLI` is on (LATUAN 2024.07.30). The shell talks to the RFIC through `rfic_ipc_glcli`.
+- **Test and debug guides:** procedures for DL and UL calibration (loop delay, IQMC, LO leakage, CFR, DPD, CLGC, RX DSA and RX LO), plus how to check M-plane and CU-plane. CLI debug commands and `netconf_client/base_xml/*/test_cmd.md` are the hands-on checks.
+- **K-OTIC and IoT:** owns the Korea OTIC process and the IoT test. The work is a study of the O-RAN CUS-plane conformance specifications, then a guide for the M-plane specifications, then the test configs in this tree: `otic_config_mplane.ini`, `otic_config_ucsplane.ini` (CU-plane, PTP, auto-config after LOCKED), `mplane_init.sh`, and the SyncE quality-level mapping in `sync_mgmt.c` (LATUAN 2025.03).
+- **System logging:** designed the OAM and RFIC log path. CLI sets the OAM level (`show_oam_log_level` / `set_g_log_level`). Fault history rotates under `__FAUL_LOG_ROTATION__` (LATUAN 2025.08.27). The RFIC driver writes syslog and rotates `/var/log/pico/rfic_driver.log`.
+- **DL and UL delay:** tuned the delay measurement on both directions. On the SoC that is `dl_frame_start_offset`, `ul_frame_start_offset`, `dl_wave_delay`, and `ul_wave_delay` in `carrier_config_req` (uc2: DL frame 0 ns, UL frame −13021 ns, DL wave 5685 ns, UL wave 1026 ns). On the RFIC it is the IQMC and DPD loop-delay measurement in `measure_iqmc_and_dpd_delaychar`, including the DPD output equalizer and writing the delays back to the INI.
+- **EVM:** optimized downlink EVM with the Gigalane test modes `RFIC_GGL_TEST_MODE_EVM_EXP1` through `EVM_EXP9` in `rfic_req_handler.c`. Those runs clear DPD alarms, set the CFR diagnostic window, and read DPD state while the signal is measured.
+- **Hex files:** owns the AFE7769D hex program for the Gigalane board. `get_config_hex_filepath` in `initdata.c` loads `Custom_Hex_File_Path` from `RFIC_Config.ini` on PC805 RDB X1/X2 (LATUAN 2025.02.14). Picocom EVB still auto-picks a hex by FSW, antenna count, and FDD. Gigalane images live under `packages/oru-8.0.1/firmware/mp_sw/rfic_driver/hex/ggl/`, named by LO and CFR (for example `..._4770_cfr90.hex` and `..._3750_cfr85.hex`). Bring-up passes that file to `afeDeviceBringup`.
+- **ANX:** M-plane test client at `sources/test_tools/anx` (Advanced NETCONF Explorer). It logs into the RU over NETCONF/SSH, loads the YANG tree, and reads config and operational data. Run with `test.sh` or `docker-compose` on port 9269.
+
 ## Quick view
 
 Three blocks share the user-plane path. OAM only configures them.
