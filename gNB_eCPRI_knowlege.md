@@ -2,67 +2,73 @@
 
 **Author:** LATUAN · **2026.10.20**
 
-FHI **7.2x**: DU giữ IQ tần số, O-RU làm FFT/IFFT. Gói đi DPDK trên VF (`fhi_72.dpdk_devices`), ethertype **0xAEFE**, tới MAC `fhi_72.ru_addr`. Không phải UDP.
+FHI **7.2x**. DU giữ IQ tần số. O-RU làm FFT và IFFT. Gói là Ethernet `0xAEFE` trên DPDK, tới MAC `fhi_72.ru_addr`. Không phải UDP, và không phải đường `udp_ecpri_if5`.
 
-Đường `udp_ecpri_if5` là split 8, time-domain, không dùng khi DU nói chuyện với O-RU.
+DU là bên gửi mọi C-plane. Có hai loại gói: `0x02` là lệnh, không có IQ; `0x00` là IQ. Lệnh và IQ của cùng một symbol đi cùng một eAxC.
 
-## 1. Một quy tắc
+## Một slot
 
-DU là nguồn C-plane. DU không bao giờ nhận C-plane. Log `O-DU recevied C-Plane message!` nghĩa là O-RU đang gửi nhầm vai.
-
-| Luồng | DU gửi | O-RU gửi | eAxC | Section | IQ width |
-|---|---|---|---|---|---|
-| DL | C-plane rồi U-plane | không | anten `0…3` | 1, hướng DL | 9 |
-| UL | chỉ C-plane | U-plane | anten `0…3` | 1, hướng UL | 9 |
-| PRACH | chỉ C-plane, đúng slot | U-plane | anten **+ offset** (mặc định 4) | 3, hướng UL, `filterIndex` 3 | 16 |
-
-Offset PRACH nằm trên cổng PUSCH. `eAxC >= offset` thì DU đếm `rx_prach_packets`, không đếm `rx_pusch_packets`.
+Đọc hình từ trên xuống. Mỗi mũi tên là một gói trên dây.
 
 ```mermaid
 sequenceDiagram
   participant DU
   participant RU as O-RU
 
-  Note over DU,RU: DL
-  DU->>RU: 0x02 section 1 DL, T1a_cp_dl
-  DU->>RU: 0x00 IQ, T1a_up
+  Note over DU,RU: DL — DU gửi lệnh, rồi gửi IQ
+  DU->>RU: 0x02 section 1, hướng DL, eAxC 0…3
+  Note over DU,RU: T1a_cp_dl 240–450 µs. Chỉ có symbol và PRB
+  DU->>RU: 0x00 IQ width 9, cùng eAxC
+  Note over RU: T1a_up 115–325 µs. O-RU IFFT ra anten
 
-  Note over DU,RU: UL
-  DU->>RU: 0x02 section 1 UL, T1a_cp_ul
-  RU->>DU: 0x00 IQ, phải vào Ta4
+  Note over DU,RU: UL — DU gửi lệnh, O-RU trả IQ
+  DU->>RU: 0x02 section 1, hướng UL, eAxC 0…3
+  Note over DU,RU: T1a_cp_ul 20–350 µs
+  RU->>DU: 0x00 IQ width 9, cùng eAxC
+  Note over DU: Phải vào Ta4 75–99 µs. O-RU đã FFT
 
-  Note over DU,RU: PRACH, chỉ slot B4
-  DU->>RU: 0x02 section 3, eAxC = anten+offset
-  RU->>DU: 0x00 IQ, cùng eAxC
+  Note over DU,RU: PRACH — lệnh trước slot, IQ sau từng symbol
+  DU->>RU: 0x02 section 3, eAxC = anten+4
+  Note over DU,RU: T1a_cp_ul, trước symbol. Slot B4, 12 symbol
+  Note over RU: Symbol lên anten, O-RU FFT xong
+  RU->>DU: 0x00 một gói mỗi symbol, eAxC 4…7
+  Note over DU: Tới trong Ta4, 75–99 µs sau OTA symbol đó
+  Note over DU: Slot đủ, rx_sym 7, OAI mới kéo lên prach_buf
 ```
 
-## 2. Đọc một gói
+**DL.** `xran_prepare_cp_dl_slot()` gửi section type 1, hướng DL, eAxC = số anten (`0…3`), IQ width 9. Gói này chỉ chỉ symbol và PRB. Sau đó DU gửi U-plane cùng eAxC. O-RU nhận IQ tần số và làm IFFT. DU không chờ gói trả về.
 
-Bốn field quyết định gói là gì. Đọc theo thứ tự này trong pcap.
+**UL.** `xran_prepare_cp_ul_slot()` gửi section type 1, hướng UL, cùng eAxC `0…3`. O-RU làm FFT rồi trả U-plane. DU phải nhận trong `Ta4`. Không có U-plane chiều UL từ DU.
 
-| Thứ tự | Field | DL / UL data | PRACH |
+**PRACH.** Cùng hàm UL, chỉ khi slot là PRACH (config index 159, format B4, dài 12 symbol). `generate_cpmsg_prach()` gửi section type 3, hướng UL, `filterIndex` 3, IQ width 16, kèm `freqOffset` và `timeOffset`. eAxC = anten + offset, mặc định 4, nên cổng là `4…7`. O-RU trả IQ trên đúng eAxC đó. `xran_common.c` thấy eAxC ≥ offset thì đếm `rx_prach_packets`. OAI bỏ `kbar` RE (mặc định 4) rồi mới dò preamble.
+
+U-plane PRACH không đi cùng lệnh. O-RU phát **một gói `0x00` cho mỗi symbol PRACH**, sau khi symbol đó đã lên anten và FFT xong. Gói phải tới DU trong `Ta4`, tức **75–99 µs sau thời điểm OTA của chính symbol đó** (`xran_cb_proc.c` đo `Ta4_min` / `Ta4_max` so với OTA). Ở 30 kHz, một symbol dài khoảng 36 µs, nên cửa sổ này rơi khoảng 2 đến 3 symbol sau symbol trên không. Sớm hơn 75 µs là `early`. Muộn hơn 99 µs là `late`.
+
+Gói rơi vào buffer xRAN ngay khi nhận. OAI chỉ kéo cả occasion lên `ru->prach_buf` khi slot UL đủ, callback `oai_xran_fh_rx_callback()` với `rx_sym == 7`, rồi `xran_fh_rx_read_slot()` gọi `read_prach_data()`.
+
+## Khi cầm một gói
+
+Đọc bốn field theo thứ tự. Dừng ở field đầu tiên không khớp hình ở trên.
+
+| Field | DL | UL | PRACH |
 |---|---|---|---|
-| 1 | eCPRI type | `0x02` lệnh, `0x00` IQ | giống vậy |
-| 2 | Hướng trong app header | DL = 1, UL = 0 | UL = 0 |
-| 3 | Section type (chỉ có trên `0x02`) | 1 | 3 |
-| 4 | eAxC (`ecpri_xtc_id`) | `0…3` | `4…7` nếu offset = 4 |
+| eCPRI type | `0x02` rồi `0x00` | `0x02` từ DU, `0x00` từ O-RU | giống UL |
+| Hướng | 1 | 0 | 0 |
+| Section type, chỉ trên `0x02` | 1 | 1 | 3 |
+| eAxC | `0…3` | `0…3` | `4…7` |
 
-C-plane không chứa IQ. Nó chỉ mang symbol, PRB, và với PRACH thêm `freqOffset`, `timeOffset`, SCS. U-plane mang IQ của đúng symbol đó, cùng eAxC với lệnh vừa gửi.
+`T1a_*` là µs **trước** symbol trên không. `Ta4` là µs **sau** OTA của chính symbol đó. Cell 100 MHz n79, 30 kHz, một symbol khoảng 36 µs. S-plane không nằm trong gói. PTP ở PF `ice`. Lệch cửa sổ thì sửa PTP, đừng sửa section.
 
-Cửa sổ của cell 100 MHz n79 (`fhi_72.fh_config`, µs trước symbol trên không):
+| Cửa sổ | µs | So với symbol | Gói |
+|---|---|---|---|
+| `T1a_cp_dl` | 240–450 | trước | DL `0x02` |
+| `T1a_up` | 115–325 | trước | DL `0x00` |
+| `T1a_cp_ul` | 20–350 | trước | UL và PRACH `0x02` |
+| `Ta4` | 75–99 | sau OTA | UL và PRACH `0x00`. PRACH: một gói mỗi symbol |
 
-| Cửa sổ | Giá trị | Gói nào |
-|---|---|---|
-| `T1a_cp_dl` | 240–450 | DL C-plane |
-| `T1a_up` | 115–325 | DL U-plane |
-| `T1a_cp_ul` | 20–350 | UL và PRACH C-plane |
-| `Ta4` | 75–99 | UL và PRACH U-plane mà DU nhận |
+## Khi gói không về
 
-S-plane không nằm trong gói eCPRI. PTP ở PF `ice`. Lệch cửa sổ thì sửa PTP trước, đừng sửa section.
-
-## 3. Triệu chứng
-
-Log mỗi 128 frame, slot 0, `oaioran.c`:
+Log mỗi 128 frame, slot 0, trong `oaioran.c`:
 
 ```
 [o-du 0][rx … pps …][tx … pps …]
@@ -70,31 +76,28 @@ Log mỗi 128 frame, slot 0, `oaioran.c`:
 [o_du0][pusch0 … prach0 …]
 ```
 
-| Thấy | Nghĩa | Nhìn tiếp |
+`early` / `late` / `on_time` chỉ đếm U-plane DU nhận. C-plane trễ thì `rx` đứng, `late` không tăng, vì cửa sổ C-plane nằm ở O-RU.
+
+| Log | Gói nào đứt | Dừng ở |
 |---|---|---|
-| `tx` pps = 0 | DU không phát | VF, hugepage, `ru_addr`, `xran_prepare_cp_*_slot` |
-| `tx` tăng, `rx` = 0 | Lệnh ra, IQ không về | MAC O-RU, MTU 9000, VLAN, PTP |
-| `late` tăng | IQ về sau `Ta4` | PTP / `Ta4`, không phải nội dung section |
-| `early` tăng | IQ về trước cửa sổ | cùng PTP, lệch ngược |
-| `pusch` tăng, `prach` = 0 | PUSCH sống, lệnh PRACH không được trả lời | `generate_cpmsg_prach`, slot index 159, eAxC offset |
-| `prach` tăng mà không dò ra preamble | IQ về đúng cổng, nội dung lệch | `freqOffset`, `kbar` (mặc định 4), `iq_width_prach` 16 |
-| `corrupt` / `dupl` | Header hoặc seq id | MTU cắt gói, seq `e_bit` |
-| Log O-DU received C-plane | O-RU gửi type `0x02` | Vai O-RU, không phải bug parser DU |
+| `tx` pps = 0 | Không có mũi tên nào ra khỏi DU | VF, `ru_addr`, `xran_prepare_cp_dl_slot` / `xran_prepare_cp_ul_slot` |
+| `tx` tăng, `rx` = 0 | Lệnh ra, IQ UL không về | MAC O-RU, MTU 9000, PTP |
+| `late` tăng | IQ về sau `Ta4` | PTP, giá trị `Ta4` |
+| `early` tăng | IQ về trước cửa sổ | PTP, lệch ngược |
+| `pusch` tăng, `prach` = 0 | Section 3 không được trả lời | `generate_cpmsg_prach`, slot 159, eAxC offset |
+| `prach` tăng, không dò ra | IQ đúng cổng, nội dung lệch | `freqOffset`, `g_kbar`, `iq_width_prach` |
+| `corrupt` hoặc `dupl` | Header hoặc seq id | MTU, `e_bit` |
+| `O-DU recevied C-Plane message!` | O-RU gửi `0x02` | Vai O-RU. DU không parse C-plane nhận vào |
 
-`on_time` / `early` / `late` chỉ tính U-plane DU nhận. Cửa sổ C-plane nằm ở O-RU. DU gửi C-plane trễ thì `rx` và `pusch` đứng, `late` không tăng.
-
-## 4. Chỗ dừng khi debug
-
-| Việc | Hàm |
+| Việc trên hình | Hàm |
 |---|---|
-| Dựng DL C-plane | `xran_prepare_cp_dl_slot()` |
-| Dựng UL C-plane, rồi PRACH nếu đúng slot | `xran_prepare_cp_ul_slot()` |
-| Điền section 3 | `generate_cpmsg_prach()` |
-| Ghi eCPRI type `0x02` và eAxC | `xran_build_ecpri_hdr()` |
-| Đẩy gói ra ring | `send_cpmsg()` |
-| Tách type khi nhận | `handle_ecpri_ethertype()` |
-| eAxC ≥ offset → PRACH, còn lại PUSCH | `xran_common.c` (nhánh `rx_prach_packets`) |
-| Bỏ RE guard trước detector | `oaioran.c`, `g_kbar` |
-| In counter | `oaioran.c`, khoảng frame `& 0x7f` |
+| Ghi type `0x02` và eAxC | `xran_build_ecpri_hdr()` |
+| Đẩy gói ra dây | `send_cpmsg()` |
+| Tách type lúc nhận | `handle_ecpri_ethertype()` |
+| Chọn PUSCH hay PRACH | `xran_common.c`, nhánh `rx_prach_packets` |
+| Ghi IQ PRACH lúc gói tới | `xran_process_prach_sym()` |
+| Cửa sổ 75–99 µs sau OTA | `xran_cb_proc.c`, `Ta4_min` / `Ta4_max` |
+| Kéo cả occasion lên L1 | `oai_xran_fh_rx_callback()` khi `rx_sym == 7`, rồi `read_prach_data()` |
+| Bỏ RE guard | `oaioran.c`, `g_kbar` |
 
-Header: `fhi_lib/lib/api/xran_pkt.h`, `xran_pkt_cp.h`. Cấu hình cell: `configs/gnb/002.gnb.sa.e2e.band79.100mhz.273.fhi72.4x4.conf`.
+Header nằm ở `fhi_lib/lib/api/xran_pkt.h` và `xran_pkt_cp.h`. Số của cell này nằm ở `configs/gnb/002.gnb.sa.e2e.band79.100mhz.273.fhi72.4x4.conf`.
