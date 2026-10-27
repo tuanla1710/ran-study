@@ -99,7 +99,67 @@ One PRG covers the whole PDSCH allocation (`num_prgs = 1`, `prg_size = rbSize`),
 
 A digital beam table (`dbt_file` / config `dbt`) can be loaded into FAPI `CONFIG.request`, but `nr_feptx_prec()` does not apply it. If a table is present and analog beamforming is off, that function hits `AssertFatal`. There is no weight push to the RU.
 
-## 4. Split 7.2x: what the O-RU must process
+## 4. If the RU itself beamforms
+
+This DU does not download amplitudes or phases to the RU. There is no C-plane section extension 11, and `xranCat` is hardcoded to Category A, so a Category B weight section is never built. The only RU beamforming control that is wired through is an index: O-RAN C-plane `beamId`. The RU must already contain the beam (phase shifter state or a stored weight row). The DU only selects the row.
+
+### 4.1 What to put in `gnb.conf`
+
+Under the MAC/RLC block, the same keys the FR2 profiles use (`gnb.sa.band257.66prb.fhi72.2x2-liteon.conf`, `gnb.sa.band257.132prb.fhi72.2x2-microamp.conf`):
+
+```text
+set_analog_beamforming = "lophy";
+beam_duration          = 1;       # consecutive slots locked to the same beam set
+beams_per_period       = 1;       # how many different beamIds may be active together
+beam_weights           = [1, 3, 5, 7];  # RU beam id, one entry per transmitted SSB, in SSB order
+```
+
+| Key | Effect |
+|---|---|
+| `lophy` | `convert_to_fapi_beam()` sets FAPI bit 15. L1 treats the low 15 bits as the RU beam id. |
+| `preconfigured` | Parsed, then rejected. Monolithic-only, and `beam_index_allocation()` aborts with `Can't handle preconfigured DBM yet`. |
+| `none` or omitted | Current 4×4 profile. `beamId` stays 0. |
+| `beam_weights` | In `lophy`, `fill_beam_index_list()` copies `bw_list[ssb]` into `beam_index_list`. These numbers must be ids the RU already knows. |
+| `beams_per_period` | Concurrent beams. `1` means the cell is one beam at a time. The DAS profile uses `2` for two radios. |
+| `beam_duration` | Slots that share one beam set. Must divide the slot count used by `initialize_beam_information()`. |
+| `dbt_file` | Loaded into FAPI only. Not sent on the fronthaul and not applied in `nr_feptx_prec()`. |
+
+`CONFIG.request` then carries `analog_bf_vendor_ext = 1` and `num_beams_period`. L1 allocates `beam_id[beam][symbol]`.
+
+### 4.2 What the DU sends each slot
+
+```mermaid
+sequenceDiagram
+  participant MAC
+  participant L1
+  participant CP as C-plane
+  participant RU as O-RU beam table
+  MAC->>MAC: SSB i maps to beam_weights i
+  MAC->>MAC: UE keeps UE_beam_index, RSRP may switch it
+  MAC->>L1: beam_idx with bit 15 set, on SSB PDCCH PDSCH PUCCH PUSCH PRACH SRS
+  L1->>L1: strip bit 15, store id on the symbols of that grant
+  L1->>CP: nBeamIndex per eAxC and symbol
+  CP->>RU: section beamId
+  Note over RU: RU applies the stored beam. IQ is still frequency-domain samples, not weights.
+```
+
+`oaioran.c` writes `nBeamIndex` from `ru->beam_id[ant_id / (nb_tx / num_beams_period)][symbol]`. With `beams_per_period = 1` every antenna of the cell shares one beam id. A symbol with no grant stays −1 in L1 and is forced to `beamId` 0 on the wire, because the xRAN field is 15 bits.
+
+The same id is used on uplink C-plane, so the RU receives on the beam it just transmitted.
+
+### 4.3 What this does to a 4×4 RU
+
+Two different RU features get confused under the name "beamforming".
+
+| RU capability | DU configuration that matches it |
+|---|---|
+| Beam table indexed by `beamId` (analog panel, or a stored digital beam). IQ is still one stream per eAxC. | `set_analog_beamforming = "lophy"` and `beam_weights` equal to those table indexes. Leave Category A. The DU precoder still runs across the four ports; `beamId` is an extra, common direction. |
+| Category B: RU applies W, DU should send layers plus weights. | Not configurable here. `get_xran_config()` forces Category A, `nAntElmTRx = 0`, and no weight section is packed. Turning on `lophy` does not send W. |
+| Category A MIMO only, `beamId` ignored, four chains hard-mapped to four elements. | Leave `set_analog_beamforming` unset. Steering stays inside `pm_idx` (section 3). A non-zero `beamId` would be meaningless or, on some RUs, would apply a second beam on top of the DU precoder. |
+
+`beams_per_period` must match the RU. One analog beamformer cannot point two ways in the same symbol. If two UEs need two beam ids and `beams_per_period` is 1, `beam_allocation_procedure()` gives the second UE no beam slot and that grant is not scheduled in that period.
+
+## 5. Split 7.2x: what the O-RU must process
 
 Category A, as built in `oran-config.c`. The DU has already done channel coding, scrambling, modulation, layer mapping, precoding, and RE mapping. IQ on the wire is frequency-domain, one stream per antenna port, after the precoder.
 
@@ -128,7 +188,7 @@ flowchart TB
   MAC --> Cplane --> DEC
 ```
 
-### 4.1 Downlink, per symbol and per eAxC
+### 5.1 Downlink, per symbol and per eAxC
 
 C-plane (section type 1, one section for the carrier in the default map):
 
@@ -151,11 +211,11 @@ U-plane: network-order frequency-domain IQ for that eAxC and symbol. The RU must
 
 Timing windows in the same config (µs): `T1a_cp_dl = (240, 450)`, `T1a_up = (115, 325)`, `T1a_cp_ul = (20, 350)`, `Ta4 = (75, 99)`. The RU must accept C-plane and U-plane inside those windows and return UL IQ inside `Ta4`.
 
-### 4.2 Uplink
+### 5.2 Uplink
 
 The DU sends a UL C-plane section (PUSCH, PUCCH, PRACH, SRS) that says which PRBs and symbols to capture on eAxC 0..3. The RU FFTs each RX chain and returns FD IQ on the same ruPort. Equalization, layer demapping, and decoding stay in the DU. SRS beam-management reports (`nfapi_nr_srs_beamforming_report_t`) are computed in DU L1 from that IQ. They are not a weight command toward the RU.
 
-### 4.3 Category B and `lophy`, for contrast
+### 5.3 Category B and `lophy`, for contrast
 
 Those paths exist in the source and are **not** the 4×4 lab profile.
 
@@ -168,11 +228,11 @@ Those paths exist in the source and are **not** the 4×4 lab profile.
 
 `beam_index_allocation()` rejects a beam index whose bit 15 is clear (`Can't handle preconfigured DBM yet`). Only `lophy` can drive `nBeamIndex` today, and only when analog beamforming was enabled in `CONFIG.request`.
 
-## 5. Antenna and AFE requirements for this 4×4 RU
+## 6. Antenna and AFE requirements for this 4×4 RU
 
 Derived from the DU profile. These are the conditions under which the precoder in section 3 is meaningful on the air.
 
-### 5.1 Antenna array
+### 6.1 Antenna array
 
 | Item | Requirement | Why |
 |---|---|---|
@@ -195,7 +255,7 @@ Logical picture of `N1 = 2`, `N2 = 1`, cross-pol (`XP = 2`):
 
 Confirm this order against the RU vendor's antenna-port map before trusting PMI. OAI assigns eAxC by antenna index 0..3; it does not read a panel geometry file.
 
-### 5.2 AFE / RF
+### 6.2 AFE / RF
 
 | Item | Requirement |
 |---|---|
@@ -210,7 +270,7 @@ Confirm this order against the RU vendor's antenna-port map before trusting PMI.
 | Beam table | Not required. `beamId` is 0. A non-zero `beamId` must not retune the AFE on this profile, because the DU will not send one. |
 | Category | The RU must be operated as Category A. A Category B RU that expects layer IQ plus a weight section will mis-apply the streams. |
 
-### 5.3 Fronthaul sizing
+### 6.3 Fronthaul sizing
 
 Four eAxC, 273 PRB, 14 symbols, BFP-9, both directions, 30 kHz SCS. Order of magnitude for the user-plane payload (IQ only, no headers):
 
@@ -223,9 +283,9 @@ Four eAxC, 273 PRB, 14 symbols, BFP-9, both directions, 30 kHz SCS. Order of mag
 
 The AFE sample clock and the DU PTP/PHC clock must be the same time base. A beam weight is useless if the four chains slip in time.
 
-## 6. Source-code analysis
+## 7. Source-code analysis
 
-### 6.1 Configuration to FAPI
+### 7.1 Configuration to FAPI
 
 ```mermaid
 flowchart TD
@@ -244,7 +304,7 @@ flowchart TD
 
 Mode strings are assigned in `MACRLC_nr_paramdef.h`: `none` → `NO_BEAM_MODE`, `preconfigured` → `PRECONFIGURED_BEAM_IDX`, `lophy` → `LOPHY_BEAM_IDX`. The 4×4 file does not set the key, so the mode stays `none`. `config.c` then sends `analog_bf_vendor_ext = 0`.
 
-### 6.2 Scheduler: one grant
+### 7.2 Scheduler: one grant
 
 ```mermaid
 flowchart TD
@@ -263,7 +323,7 @@ The same `beam_idx` is written for PDCCH (`prepare_dci_pdu`), CSI-RS, SSB (`gNB_
 
 `beam_allocation_procedure()` only limits concurrent analog beams when `beam_mode != NO_BEAM_MODE`. In `none` it always returns beam slot 0.
 
-### 6.3 L1 PDSCH: precoder then antenna grid
+### 7.3 L1 PDSCH: precoder then antenna grid
 
 ```mermaid
 flowchart TD
@@ -296,7 +356,7 @@ Call sites of `beam_index_allocation()`:
 
 On the 4×4 profile every one of these returns 0, because `common_vars.beam_id` is NULL (`nr_init.c` allocates it only when the analog-BF vendor extension is set).
 
-### 6.4 RU thread and FHI 7.2
+### 7.4 RU thread and FHI 7.2
 
 ```mermaid
 flowchart TD
@@ -318,7 +378,7 @@ flowchart TD
 
 `get_xran_config()` comment states the integration is valid for Category A only. Category B would require `neAxcUl`, `nAntElmTRx`, and a different eAxC meaning (layers and SRS elements). Those are left at 0.
 
-### 6.5 Analog beam path, present in code, off in this lab
+### 7.5 Analog beam path, present in code, off in this lab
 
 ```mermaid
 sequenceDiagram
@@ -338,7 +398,7 @@ sequenceDiagram
 
 `clear_slot_beamid()` wipes the symbol map to −1 at the start of the slot so an unscheduled symbol does not keep a stale beam.
 
-## 7. File index
+## 8. File index
 
 | Topic | Location |
 |---|---|
@@ -352,7 +412,8 @@ sequenceDiagram
 | IQ copy, DBT not applied | `openair1/SCHED_NR/nr_ru_procedures.c` |
 | Category A, eAxC, `neAxc` | `radio/fhi_72/oran-config.c` |
 | `nBeamIndex` on the C-plane | `radio/fhi_72/oaioran.c` |
+| RU beam id list (`lophy`) | `beam_weights` in the MAC/RLC block; `fill_beam_index_list()` |
 
-## 8. Short reading of the 4×4 lab
+## 9. Short reading of the 4×4 lab
 
-The DU controls the RU by the content of four frequency-domain IQ streams, not by a beam index. CSI RI/PMI selects `pm_idx`. L1 applies that matrix and ships the result as eAxC 0..3, BFP-9, `beamId` 0. The RU must keep a fixed, coherent 4T4R map, decompress, IFFT, and transmit. It must not expect weights, a beam table, or a non-zero `beamId`. Turning on real RU beam steering means `set_analog_beamforming = "lophy"` plus an RU that honors C-plane `beamId`, which this profile does not do. Turning on Category B means the RU applies `W`, which this xRAN integration does not configure.
+The DU controls the RU by the content of four frequency-domain IQ streams, not by a beam index. CSI RI/PMI selects `pm_idx`. L1 applies that matrix and ships the result as eAxC 0..3, BFP-9, `beamId` 0. The RU must keep a fixed, coherent 4T4R map, decompress, IFFT, and transmit. It must not expect weights, a beam table, or a non-zero `beamId`. If the RU has its own beam table, section 4 is the path: `set_analog_beamforming = "lophy"` and `beam_weights` set to the RU's beam ids. The DU then sends those ids as C-plane `beamId` and still does not send the weights. Category B weight transfer is not implemented.
