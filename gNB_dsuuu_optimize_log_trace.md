@@ -181,21 +181,67 @@ Copy a row per run. One knob only.
 
 | Field | Baseline (default L2 n2) | After A (n4) | After B (n6) |
 |---|---|---|---|
-| Date / time | 2026-10-28 | | |
-| RNTI | | | |
-| `uess_agg_levels` in conf | *(absent)* | `[0,4,0,0,0]` | `[0,6,0,0,0]` |
-| `du.log` `L2:` | 2 | | |
-| Traffic | DL-only UDP / bi-dir | | |
-| CQI / RI / MCS / NPRB | | | |
-| BLER / pucch0_DTX | | | |
-| dt (s) | 20 | 20 | 20 |
-| dl_ok / dl_fail | | | |
-| ul_ok / ul_fail | | | |
-| dl_fail_rate | ~0.39 (long run) | | |
-| ul_fail_rate | ~0.23 (long run) | | |
-| MAC_bps / LCID4_bps | | | |
-| iperf UDP DL | 296 Mbit/s | | |
-| Verdict | CCE limited | | |
+| Date / time | 2026-10-28 | **2026-10-28 09:01:35–09:02:05** | **2026-10-28 09:04:22–09:05:00** |
+| RNTI | `987e` | **`29ab`** | **`2003`** |
+| `uess_agg_levels` in conf | *(absent)* | `[0,4,0,0,0]` live+project | **`[0,6,0,0,0]`** live+project |
+| `du.log` `L2:` | 2 | **4** (boot 08:58:11) | **6** (boot 09:03:14) |
+| Traffic | DL UDP | DL UDP (user: unstable) | DL UDP |
+| CQI / RI / MCS / NPRB | 15 / 4 / 25–27 / 273 | **15 / 4 / 25 / 273** | **15 / 4 / 27 / 273** |
+| BLER / pucch0_DTX | ~0 / — | **0.04** / **+1500 / 30 s** | **0** / **+0** |
+| dt (s) | long attach | **30** (clock, not 20) | **38** |
+| dl_ok / dl_fail | 766226 / 498831 | **20976 / 1526** | **30401 / 0** |
+| ul_ok / ul_fail | 1676576 / 494895 | **30002 / 0** | **38000 / 0** |
+| dl_fail_rate | ~0.39 | **0.068** | **0** |
+| ul_fail_rate | ~0.23 | **0.00** | **0** |
+| MAC_bps / LCID4_bps | — | **483 / 482** | **628 / 626** |
+| iperf UDP DL | 296 Mbit/s | **467 Mbit/s unstable** | **608 Mbit/s** |
+| Verdict | CCE limited | **A partial.** UL CCE gone. DL CCE 39%→7%. UDP +171. Not at 630–650. Instability = PUCCH DTX + retx 7% + MCS 25 | **B pass.** CCE gone. 800 PDSCH/s. UDP 608 ≈ 93% of MCS27 theory ~655, 97% of MAC |
+
+### 7.1 After-A 30 s (UE `29ab`)
+
+```text
+t0 09:01:35  dlsch 107104  dl_cce 11377  ulsch 174269  ul_cce 82
+             MAC TX 9493107702   LCID4 9471248677   MCS 25 NPRB 273
+t1 09:02:05  dlsch 128080  dl_cce 12903  ulsch 204271  ul_cce 82
+             MAC TX 11304324096  LCID4 11278481858  MCS 25 NPRB 273
+
+dt            = 30 s
+dl_ok / fail  = 20976 / 1526     dl_fail_rate = 6.8%
+ul_ok / fail  = 30002 / 0        ul_fail_rate = 0
+MAC           = 1.811e9 × 8 / 30 = 483 Mbit/s
+LCID4         = 1.807e9 × 8 / 30 = 482 Mbit/s
+iperf UDP     = 467 Mbit/s  (~97% of LCID4)
+r1 / dl_ok    = 1500 / 20976     = 7.2% HARQ retx
+pucch0_DTX    = +1500             (same count as r1)
+PDSCH/s       = 20976 / 30       = 699   (DSUUU ceiling 800)
+```
+
+| vs theory 636 (MCS26 P1) | After A |
+|---|---|
+| UDP 467 | **73%** (was 47% @ 296) |
+| Seats used | UL CCE **fixed**. DL still loses ~7% |
+| Why not 630 and why unstable | MCS **25** not 26; **7%** PUCCH DTX / r1; **13%** DL occasions missing (699/800); PMI (4,0)↔(4,1). TTI skip after restart: **2** only |
+
+### 7.2 After-B 38 s (UE `2003`)
+
+```text
+t0 09:04:22  dlsch 27061   dl_cce 32   ulsch 33751   ul_cce 70
+             MAC TX 2644915993   LCID4 2639107990   MCS 27 NPRB 273
+t1 09:05:00  dlsch 57462   dl_cce 32   ulsch 71751   ul_cce 70
+             MAC TX 5626304087   LCID4 5613951757   MCS 27
+
+dt            = 38 s
+dl_ok / fail  = 30401 / 0        dl_fail_rate = 0
+ul_ok / fail  = 38000 / 0        ul_fail_rate = 0
+MAC           = 2.981e9 × 8 / 38 = 628 Mbit/s
+LCID4         = 2.975e9 × 8 / 38 = 626 Mbit/s
+iperf UDP     = 608 Mbit/s  (~97% of LCID4, ~93% of 655 MCS27 theory)
+PDSCH/s       = 30401 / 38       = 800   (DSUUU ceiling)
+pucch0_DTX    = +0
+r1            = +1
+```
+
+B clears the leftover 7% DL CCE. AMC can sit on MCS 27 / BLER 0. Remaining ~20–45 Mbit/s to 650 is TBS/iperf, not search space.
 
 ## 8. Extra greps (only if a gate fails)
 
@@ -214,4 +260,4 @@ tail -n 40 /var/log/oai-gnb/nrL1_stats.log
 
 ## 9. One line
 
-**Trace DSUUU optimize by boot `L2: N` plus a 20 s `CCE fail` delta, not by the absolute fail count.** A is `uess_agg_levels = [0, 4, 0, 0, 0]` and a re-attach. Pass = `L2: 4`, air still CQI15/RI4, `dl_fail_rate ≈ 0`, UDP climbing toward 630–650.
+**Trace DSUUU optimize by boot `L2: N` plus a `CCE fail` delta, not the absolute count.** A (`n4`) cut fail 39%→7% and UDP 296→467. B (`n6`) zeroed CCE, 800 PDSCH/s, MCS 27, UDP **608** / MAC **628** vs theory ~655.

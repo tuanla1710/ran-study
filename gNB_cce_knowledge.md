@@ -212,6 +212,38 @@ Measured UDP **296 Mbit/s** ≈ **47%** of 636. Same UE later in the run (still 
 
 Fail rate DL > UL matches the schedule order: UL takes the two UESS seats, DL loses. UL still fails the third k2. This is **not** a counter bug and **not** an empty physical CORESET.
 
+### 6.1 After try A — `uess_agg_levels = [0, 4, 0, 0, 0]` (2026-10-28 09:02)
+
+Live+project, `oai-du` 08:58:11, boot `L2: 4`. New attach UE `29ab`. 30 s window 09:01:35–09:02:05 while UDP running:
+
+| | Baseline L2 n2 | After A L2 n4 |
+|---|---|---|
+| iperf UDP DL | 296 | **467 unstable** |
+| MAC / LCID4 (30 s) | — | **483 / 482** |
+| `dl_fail_rate` | ~0.39 | **0.068** |
+| `ul_fail_rate` | ~0.23 | **0** |
+| MCS / NPRB | 25–27 / 273 | **25 / 273** |
+| CQI / RI | 15 / 4 | 15 / 4 |
+| PUCCH DTX / r1 | low | **+1500 / 30 s** (7%) |
+
+A **worked on CCE** (UL fail gone, DL fail 39%→7%, UDP +171). It did **not** reach 630–650 and the rate wobbles because HARQ/PUCCH DTX and MCS 25 now dominate, not empty seats.
+
+### 6.2 After try B — `uess_agg_levels = [0, 6, 0, 0, 0]` (2026-10-28 09:05)
+
+`oai-du` 09:03:14, boot `L2: 6`. UE `2003`. 38 s window 09:04:22–09:05:00:
+
+| | After A L2 n4 | After B L2 n6 |
+|---|---|---|
+| iperf UDP DL | 467 unstable | **608** |
+| MAC / LCID4 | 483 / 482 | **628 / 626** |
+| `dl_fail_rate` | 0.068 | **0** |
+| `ul_fail_rate` | 0 | **0** |
+| MCS / BLER | 25 / 0.04 | **27 / 0** |
+| PDSCH/s | 699 | **800** (ceiling) |
+| PUCCH DTX | +1500 / 30 s | **+0** |
+
+B is the DSUUU CCE fix. 608 UDP ≈ 93% of MCS27 theory (~655), 97% of MAC. Sheet: `gNB_dsuuu_optimize_log_trace.md` §7.2.
+
 ```text
 WANT PDSCH
   → need DCI on PDCCH

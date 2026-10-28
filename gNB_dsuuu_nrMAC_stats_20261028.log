@@ -1,0 +1,10 @@
+UE RNTI 2003 CU-UE-ID 1 in-sync PH 54 dB PCMAX 22 dBm, average RSRP -51 (60 meas)
+UE 2003: CQI 15, RI 4, PMI (7,1)
+UE 2003: UL-RI 2, TPMI 0
+UE 2003: dlsch_rounds 481538/1970/46/24, dlsch_errors 22, pucch0_DTX 138 (SNR 21.7+1.7 dB), BLER 0.00000 MCS (1) 27 NPRB 273 CCE fail 32
+UE 2003: ulsch_rounds 792335/66086/29000/1737, ulsch_errors 432, ulsch_DTX 267, BLER 0.11142 MCS (0) 13 (Qm 4 deltaMCS 0 dB) NPRB 20 SNR 23.3 (+0.3) dB CCE fail 70
+UE 2003: MAC:    TX    45106658443 RX     4011197221 bytes
+UE 2003: LCID 1: TX           2899 RX          18910 bytes
+UE 2003: LCID 2: TX             65 RX             24 bytes
+UE 2003: LCID 4: TX    44983015105 RX     3143769372 bytes
+
