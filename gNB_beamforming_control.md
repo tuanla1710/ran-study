@@ -1,6 +1,6 @@
 # OAI DU beam control and the 4×4 O-RU (split 7.2x)
 
-This note describes how the OAI DU in this tree controls a 4×4 radio over O-RAN fronthaul split 7.2x, which information the RU must apply, and which antenna and AFE properties that implies. The worked example is the lab profile `configs/gnb/002.gnb.sa.e2e.band79.100mhz.273.fhi72.4x4.conf` (n79, 100 MHz, 273 PRB, 4 TX / 4 RX).
+This note describes how the OAI DU in this tree controls a 4×4 radio over O-RAN fronthaul split 7.2x, which information the RU must apply, and which antenna and AFE properties that implies. The worked example is the lab profile `configs/gnb/002.gnb.sa.e2e.band79.100mhz.273.fhi72.4x4.dsuuu.conf` (n79, 100 MHz, 273 PRB, 4 TX / 4 RX, DSUUU).
 
 Source tree: `sources/openairinterface5g-v26.w14`.
 
@@ -402,7 +402,7 @@ sequenceDiagram
 
 | Topic | Location |
 |---|---|
-| 4×4 profile | `configs/gnb/002.gnb.sa.e2e.band79.100mhz.273.fhi72.4x4.conf` |
+| 4×4 profile | `configs/gnb/002.gnb.sa.e2e.band79.100mhz.273.fhi72.4x4.dsuuu.conf` |
 | Mode enum and `convert_to_fapi_beam` | `openair2/LAYER2/NR_MAC_gNB/nr_mac_gNB.h`, `gNB_scheduler_primitives.c` |
 | Mode string parse | `openair2/GNB_APP/MACRLC_nr_paramdef.h`, `gnb_config.c` |
 | Codebook and DBT TLV | `openair2/LAYER2/NR_MAC_gNB/config.c` |
